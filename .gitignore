@@ -1,0 +1,14 @@
+build/
+.cache/
+.vscode/
+.idea/
+*.o
+*.obj
+*.a
+*.elf
+*.bin
+*.map
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
