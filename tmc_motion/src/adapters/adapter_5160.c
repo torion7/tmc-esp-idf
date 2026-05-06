@@ -95,4 +95,5 @@ const tmc_motion_driver_ops_t tmc_motion_ops_5160 = {
     .reg_rampmode          = TMC5160_REG_RAMPMODE,
     .reg_ramp_stat         = TMC5160_REG_RAMP_STAT,
     .reg_gconf             = TMC5160_REG_GCONF,
+    .reg_chopconf          = TMC5160_REG_CHOPCONF,
 };

@@ -44,6 +44,22 @@ static tmc_motion_config_phys_t sanitize_profile(const tmc_motion_config_phys_t 
     return s;
 }
 
+static bool microsteps_to_mres(uint16_t microsteps, uint8_t *out_mres)
+{
+    switch (microsteps) {
+    case 256: *out_mres = 0; return true;
+    case 128: *out_mres = 1; return true;
+    case  64: *out_mres = 2; return true;
+    case  32: *out_mres = 3; return true;
+    case  16: *out_mres = 4; return true;
+    case   8: *out_mres = 5; return true;
+    case   4: *out_mres = 6; return true;
+    case   2: *out_mres = 7; return true;
+    case   1: *out_mres = 8; return true;
+    default: return false;
+    }
+}
+
 // ===========================================================================
 // Apply current motion_phys profile to chip registers (caller holds lock)
 // ===========================================================================
@@ -192,6 +208,7 @@ esp_err_t tmc_motion_set_velocity_rpm(tmc_motion_handle_t h, double rpm)
 
     uint32_t vmax     = tmc_motion_rpm_to_vmax(h, rpm);
     int32_t  signed_v = (rpm < 0.0) ? -(int32_t)vmax : (int32_t)vmax;
+    if (h->motor_inverted) signed_v = -signed_v;
 
     esp_err_t err = tmc_motion_start_velocity_with_stallguard_arm_locked(h, signed_v,
                                                                          h->stallguard.sg_stop);
@@ -318,15 +335,105 @@ esp_err_t tmc_motion_set_motor_inverted(tmc_motion_handle_t h, bool inverted)
     uint32_t gconf = 0;
     esp_err_t err = h->ops->read_register(h->chip_handle, h->ops->reg_gconf, &gconf);
     if (err == ESP_OK) {
-        if (inverted) gconf |=  (1UL << 4);
-        else          gconf &= ~(1UL << 4);
+        gconf &= ~(1UL << 4);
         err = h->ops->write_register(h->chip_handle, h->ops->reg_gconf, gconf);
+    }
+    if (err == ESP_OK) {
+        uint32_t raw_xactual = 0;
+        err = h->ops->read_register(h->chip_handle, h->ops->reg_xactual, &raw_xactual);
+        if (err == ESP_OK) {
+            int32_t old_xactual = (int32_t)raw_xactual;
+            int32_t old_xtarget = h->xtarget;
+            bool old_inverted = h->motor_inverted;
+
+            double logical_xactual = tmc_motion_units_steps_to_degrees(old_xactual, h->microsteps_per_rev);
+            double logical_xtarget = tmc_motion_units_steps_to_degrees(old_xtarget, h->microsteps_per_rev);
+            if (old_inverted) {
+                logical_xactual = -logical_xactual;
+                logical_xtarget = -logical_xtarget;
+            }
+
+            h->motor_inverted = inverted;
+            int32_t new_xactual = tmc_motion_units_degrees_to_steps(inverted ? -logical_xactual : logical_xactual,
+                                                                    h->microsteps_per_rev);
+            int32_t new_xtarget = tmc_motion_units_degrees_to_steps(inverted ? -logical_xtarget : logical_xtarget,
+                                                                    h->microsteps_per_rev);
+            err = h->ops->write_register(h->chip_handle, h->ops->reg_xactual, (uint32_t)new_xactual);
+            if (err == ESP_OK) err = h->ops->write_register(h->chip_handle, h->ops->reg_xtarget, (uint32_t)new_xtarget);
+            if (err == ESP_OK) {
+                h->xtarget = new_xtarget;
+                err = tmc_motion_engage_position_hold_locked(h);
+            }
+            if (err != ESP_OK) {
+                h->motor_inverted = old_inverted;
+            }
+        }
     }
     if (err == ESP_OK) {
         tmc_motion_clear_last_error_locked(h);
         (void)tmc_motion_refresh_diag_locked(h);
     } else {
         tmc_motion_set_last_error_locked(h, err, "set direction failed");
+    }
+    tmc_motion_unlock_internal(h);
+    return err;
+}
+
+esp_err_t tmc_motion_set_microsteps_per_fullstep(tmc_motion_handle_t h, uint16_t microsteps)
+{
+    ESP_RETURN_ON_FALSE(h, ESP_ERR_INVALID_ARG, TAG, "null handle");
+
+    uint8_t mres = 0;
+    ESP_RETURN_ON_FALSE(microsteps_to_mres(microsteps, &mres), ESP_ERR_INVALID_ARG, TAG, "invalid microsteps");
+
+    ESP_RETURN_ON_ERROR(tmc_motion_lock_internal(h), TAG, "lock");
+    if (tmc_motion_busy_locked(h)) {
+        tmc_motion_unlock_internal(h);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint32_t old_microsteps_per_rev = h->microsteps_per_rev;
+    uint32_t new_microsteps_per_rev = h->fullsteps_per_rev * (uint32_t)microsteps;
+    if (old_microsteps_per_rev == new_microsteps_per_rev) {
+        tmc_motion_unlock_internal(h);
+        return ESP_OK;
+    }
+
+    uint32_t raw_xactual = 0;
+    esp_err_t err = h->ops->read_register(h->chip_handle, h->ops->reg_xactual, &raw_xactual);
+    int32_t old_xactual = (int32_t)raw_xactual;
+    int32_t old_xtarget = h->xtarget;
+
+    uint32_t chopconf = 0;
+    if (err == ESP_OK) err = h->ops->read_register(h->chip_handle, h->ops->reg_chopconf, &chopconf);
+    if (err == ESP_OK) {
+        chopconf &= ~(0xFUL << 24);
+        chopconf |= ((uint32_t)mres & 0xFU) << 24;
+        err = h->ops->write_register(h->chip_handle, h->ops->reg_chopconf, chopconf);
+    }
+
+    if (err == ESP_OK) {
+        int64_t scaled_xactual = ((int64_t)old_xactual * (int64_t)new_microsteps_per_rev) /
+                                 (int64_t)old_microsteps_per_rev;
+        int64_t scaled_xtarget = ((int64_t)old_xtarget * (int64_t)new_microsteps_per_rev) /
+                                 (int64_t)old_microsteps_per_rev;
+        h->microsteps_per_rev = new_microsteps_per_rev;
+        err = h->ops->write_register(h->chip_handle, h->ops->reg_xactual, (uint32_t)(int32_t)scaled_xactual);
+        if (err == ESP_OK) err = h->ops->write_register(h->chip_handle, h->ops->reg_xtarget, (uint32_t)(int32_t)scaled_xtarget);
+        if (err == ESP_OK) {
+            h->xtarget = (int32_t)scaled_xtarget;
+            err = tmc_motion_engage_position_hold_locked(h);
+        }
+        if (err != ESP_OK) {
+            h->microsteps_per_rev = old_microsteps_per_rev;
+        }
+    }
+
+    if (err == ESP_OK) {
+        tmc_motion_clear_last_error_locked(h);
+        (void)tmc_motion_refresh_diag_locked(h);
+    } else {
+        tmc_motion_set_last_error_locked(h, err, "set microsteps failed");
     }
     tmc_motion_unlock_internal(h);
     return err;

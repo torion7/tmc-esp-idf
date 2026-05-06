@@ -23,8 +23,10 @@ struct tmc_motion_s {
     char                             name[32];
 
     // Mechanical / clock
+    uint32_t                         fullsteps_per_rev;
     uint32_t                         microsteps_per_rev;
     uint32_t                         fclk_hz;
+    bool                             motor_inverted;
 
     // Configured profiles (mirror of last-applied state).
     tmc_motion_config_phys_t         motion_phys;

@@ -95,7 +95,8 @@ typedef struct {
     const tmc_motion_coolstep_config_t    *initial_coolstep;
     const tmc_motion_stealthchop_config_t *initial_stealthchop;
 
-    // GCONF.shaft default (false = normal phase order, true = inverted).
+    // Logical direction default. The motion layer maps logical units to the
+    // driver's raw direction so commands and displayed positions stay aligned.
     bool                            initial_motor_inverted;
 
     // Optional name (used in logs and the UI).
@@ -206,6 +207,7 @@ typedef struct {
     // Motor parameters that the UI may want to display.
     uint32_t                                   microsteps_per_rev;
     uint32_t                                   fclk_hz;
+    bool                                       motor_inverted;
 
     uint64_t                                   last_diag_ms;
     tmc_motion_diag_t                          diag;
@@ -236,6 +238,7 @@ esp_err_t tmc_motion_stop                (tmc_motion_handle_t h);
 esp_err_t tmc_motion_set_position_zero   (tmc_motion_handle_t h);
 esp_err_t tmc_motion_set_current         (tmc_motion_handle_t h, uint16_t run_ma, uint8_t hold_pct);
 esp_err_t tmc_motion_set_motor_inverted  (tmc_motion_handle_t h, bool inverted);
+esp_err_t tmc_motion_set_microsteps_per_fullstep(tmc_motion_handle_t h, uint16_t microsteps);
 esp_err_t tmc_motion_configure_motion_phys(tmc_motion_handle_t h,
                                            const tmc_motion_config_phys_t *cfg);
 

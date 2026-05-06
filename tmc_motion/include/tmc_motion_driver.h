@@ -47,7 +47,7 @@ typedef struct tmc_motion_driver_ops_s {
     const char *name;
 
     // Raw register access (still needed for fields not abstracted below:
-    // RAMP_STAT clear, GCONF.shaft toggle, XTARGET writes from closed-loop).
+    // RAMP_STAT clear, XTARGET writes, and runtime CHOPCONF updates).
     esp_err_t (*write_register)(void *chip, uint8_t reg, uint32_t value);
     esp_err_t (*read_register )(void *chip, uint8_t reg, uint32_t *out);
 
@@ -93,6 +93,7 @@ typedef struct tmc_motion_driver_ops_s {
     uint8_t reg_rampmode;
     uint8_t reg_ramp_stat;
     uint8_t reg_gconf;
+    uint8_t reg_chopconf;
 } tmc_motion_driver_ops_t;
 
 #ifdef __cplusplus
