@@ -34,6 +34,7 @@ typedef struct {
     uint32_t tcoolthrs;
     uint32_t tpwmthrs;
     uint32_t drv_status;
+    uint32_t sg4_result;
     uint32_t tstep;
     int32_t  xactual;
     int32_t  vactual;
@@ -62,7 +63,7 @@ typedef struct tmc_motion_driver_ops_s {
     esp_err_t (*stop                )(void *chip);
 
     // Features
-    esp_err_t (*configure_stallguard )(void *chip, int8_t   sgt,
+    esp_err_t (*configure_stallguard )(void *chip, int16_t  sgt,
                                                    bool     sfilt,
                                                    uint32_t tcoolthrs,
                                                    bool     sg_stop);

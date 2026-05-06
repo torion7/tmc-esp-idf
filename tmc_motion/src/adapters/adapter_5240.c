@@ -35,7 +35,7 @@ static esp_err_t a_set_position_mode(void *c, int32_t xtarget) {
 static esp_err_t a_stop(void *c) {
     return tmc5240_stop((tmc5240_handle_t)c);
 }
-static esp_err_t a_configure_stallguard(void *c, int8_t sgt, bool sfilt,
+static esp_err_t a_configure_stallguard(void *c, int16_t sgt, bool sfilt,
                                         uint32_t tcoolthrs, bool sg_stop) {
     return tmc5240_configure_stallguard((tmc5240_handle_t)c, sgt, sfilt, tcoolthrs, sg_stop);
 }
@@ -64,6 +64,7 @@ static esp_err_t a_collect_diag(void *c, tmc_motion_diag_t *out) {
     out->tcoolthrs      = d.tcoolthrs;
     out->tpwmthrs       = d.tpwmthrs;
     out->drv_status     = d.drv_status;
+    out->sg4_result     = d.sg4_result;
     out->tstep          = d.tstep;
     out->xactual        = d.xactual;
     out->vactual        = d.vactual;

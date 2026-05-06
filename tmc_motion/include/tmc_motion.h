@@ -53,7 +53,7 @@ typedef struct {
 } tmc_motion_config_phys_t;
 
 typedef struct {
-    int8_t   sgt;
+    int16_t  sgt;
     bool     sfilt;
     uint32_t tcoolthrs;
     bool     sg_stop;
@@ -124,6 +124,7 @@ typedef struct {
     bool     velocity_reached;
     uint32_t cs_actual;
     uint32_t sg_result;
+    uint32_t sg4_result;
 } tmc_motion_decoded_diag_t;
 
 typedef struct {
@@ -238,6 +239,7 @@ esp_err_t tmc_motion_stop                (tmc_motion_handle_t h);
 esp_err_t tmc_motion_set_position_zero   (tmc_motion_handle_t h);
 esp_err_t tmc_motion_set_current         (tmc_motion_handle_t h, uint16_t run_ma, uint8_t hold_pct);
 esp_err_t tmc_motion_set_motor_inverted  (tmc_motion_handle_t h, bool inverted);
+esp_err_t tmc_motion_set_fullsteps_per_rev(tmc_motion_handle_t h, uint16_t fullsteps_per_rev);
 esp_err_t tmc_motion_set_microsteps_per_fullstep(tmc_motion_handle_t h, uint16_t microsteps);
 esp_err_t tmc_motion_configure_motion_phys(tmc_motion_handle_t h,
                                            const tmc_motion_config_phys_t *cfg);

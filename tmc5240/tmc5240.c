@@ -555,23 +555,24 @@ esp_err_t tmc5240_stop(tmc5240_handle_t handle)
 // Feature configuration
 // ===========================================================================
 esp_err_t tmc5240_configure_stallguard(tmc5240_handle_t handle,
-                                       int8_t   sgt,
+                                       int16_t  sgt,
                                        bool     sfilt,
                                        uint32_t tcoolthrs,
                                        bool     sg_stop)
 {
     ESP_RETURN_ON_FALSE(handle != NULL, ESP_ERR_INVALID_ARG, TAG, "handle null");
-    ESP_RETURN_ON_FALSE(sgt >= -64 && sgt <= 63, ESP_ERR_INVALID_ARG, TAG, "sgt out of range");
+    ESP_RETURN_ON_FALSE(sgt >= 0 && sgt <= 255, ESP_ERR_INVALID_ARG, TAG, "sg4 threshold out of range");
     ESP_RETURN_ON_FALSE(tcoolthrs <= 0xFFFFFU, ESP_ERR_INVALID_ARG, TAG, "tcoolthrs out of range");
 
     struct tmc5240_dev_t *dev = handle;
     uint32_t coolconf = dev->shadow_coolconf & 0x0000FFFFUL;
-    coolconf |= ((uint32_t)((uint8_t)sgt & 0x7F)) << 16;
     if (sfilt) coolconf |= 1UL << 24;
 
     uint32_t sw_mode = sg_stop ? (1UL << 10) : 0U;
+    uint32_t sg4_thrs = (uint32_t)sgt;
 
     ESP_RETURN_ON_ERROR(tmc5240_write_register(handle, TMC5240_REG_COOLCONF,  coolconf),  TAG, "COOLCONF");
+    ESP_RETURN_ON_ERROR(tmc5240_write_register(handle, TMC5240_REG_SG4_THRS,  sg4_thrs),  TAG, "SG4_THRS");
     ESP_RETURN_ON_ERROR(tmc5240_write_register(handle, TMC5240_REG_TCOOLTHRS, tcoolthrs), TAG, "TCOOLTHRS");
     return tmc5240_write_register(handle, TMC5240_REG_SW_MODE, sw_mode);
 }
@@ -680,6 +681,7 @@ esp_err_t tmc5240_collect_diag(tmc5240_handle_t handle, tmc5240_diag_t *diag)
     ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_SW_MODE,    &diag->sw_mode),    TAG, "SW_MODE");
     ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_RAMP_STAT,  &diag->ramp_stat),  TAG, "RAMP_STAT");
     ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_DRV_STATUS, &diag->drv_status), TAG, "DRV_STATUS");
+    ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_SG4_RESULT, &diag->sg4_result), TAG, "SG4_RESULT");
 
     uint32_t raw_xactual = 0, raw_vactual = 0, raw_tstep = 0;
     ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_XACTUAL, &raw_xactual), TAG, "XACTUAL");
@@ -692,6 +694,7 @@ esp_err_t tmc5240_collect_diag(tmc5240_handle_t handle, tmc5240_diag_t *diag)
     }
     diag->vactual       = (int32_t)raw_vactual;
     diag->tstep         = raw_tstep & 0xFFFFFU;
+    diag->sg4_result    &= 0x3FFU;
     diag->ihold_irun    = dev->shadow_ihold_irun;
     diag->tpowerdown    = dev->shadow_tpowerdown;
     diag->global_scaler = dev->shadow_global_scaler;

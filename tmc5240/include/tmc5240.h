@@ -86,6 +86,7 @@ typedef struct {
     uint32_t global_scaler;
     uint32_t tcoolthrs;
     uint32_t drv_status;
+    uint32_t sg4_result;
     uint32_t tstep;
     int32_t  xactual;
     int32_t  vactual;
@@ -137,7 +138,7 @@ esp_err_t tmc5240_stop             (tmc5240_handle_t handle);
 // Feature configuration
 // ---------------------------------------------------------------------------
 esp_err_t tmc5240_configure_stallguard (tmc5240_handle_t handle,
-                                        int8_t   sgt,
+                                        int16_t  sgt,
                                         bool     sfilt,
                                         uint32_t tcoolthrs,
                                         bool     sg_stop);

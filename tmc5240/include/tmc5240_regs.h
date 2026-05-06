@@ -46,6 +46,8 @@ enum {
     TMC5240_REG_COOLCONF     = 0x6D,
     TMC5240_REG_DRV_STATUS   = 0x6F,
     TMC5240_REG_PWMCONF      = 0x70,
+    TMC5240_REG_SG4_THRS     = 0x74,
+    TMC5240_REG_SG4_RESULT   = 0x75,
 };
 
 // DRV_CONF.current_range bits [1:0] select the full-scale current reference.

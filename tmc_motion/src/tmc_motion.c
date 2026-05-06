@@ -90,6 +90,7 @@ void tmc_motion_decode_diag(const tmc_motion_diag_t *diag, tmc_motion_decoded_di
 
     out->cs_actual        = (diag->drv_status >> 16) & 0x1FU;
     out->sg_result        =  diag->drv_status        & 0x3FFU;
+    out->sg4_result       =  diag->sg4_result        & 0x3FFU;
 }
 
 esp_err_t tmc_motion_refresh_diag_locked(tmc_motion_handle_t h)
@@ -105,10 +106,10 @@ esp_err_t tmc_motion_refresh_diag_locked(tmc_motion_handle_t h)
 
 esp_err_t tmc_motion_clear_ramp_status_events_locked(tmc_motion_handle_t h)
 {
-    uint32_t ramp_stat = 0;
-    ESP_RETURN_ON_ERROR(h->ops->read_register(h->chip_handle, h->ops->reg_ramp_stat, &ramp_stat),
-                        TAG, "read RAMP_STAT");
-    return h->ops->write_register(h->chip_handle, h->ops->reg_ramp_stat, ramp_stat);
+    // RAMP_STAT event flags are write-1-to-clear. Do not write the full
+    // register image back because it also contains live status bits.
+    const uint32_t event_mask = 0xFFU;
+    return h->ops->write_register(h->chip_handle, h->ops->reg_ramp_stat, event_mask);
 }
 
 bool tmc_motion_busy_locked(tmc_motion_handle_t h)

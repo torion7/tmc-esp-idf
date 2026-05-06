@@ -541,7 +541,7 @@ esp_err_t tmc5160_stop(tmc5160_handle_t handle)
 // Feature configuration
 // ===========================================================================
 esp_err_t tmc5160_configure_stallguard(tmc5160_handle_t handle,
-                                       int8_t   sgt,
+                                       int16_t  sgt,
                                        bool     sfilt,
                                        uint32_t tcoolthrs,
                                        bool     sg_stop)

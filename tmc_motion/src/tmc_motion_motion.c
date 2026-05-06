@@ -439,6 +439,65 @@ esp_err_t tmc_motion_set_microsteps_per_fullstep(tmc_motion_handle_t h, uint16_t
     return err;
 }
 
+esp_err_t tmc_motion_set_fullsteps_per_rev(tmc_motion_handle_t h, uint16_t fullsteps_per_rev)
+{
+    ESP_RETURN_ON_FALSE(h, ESP_ERR_INVALID_ARG, TAG, "null handle");
+    ESP_RETURN_ON_FALSE(fullsteps_per_rev > 0, ESP_ERR_INVALID_ARG, TAG, "invalid fullsteps");
+
+    ESP_RETURN_ON_ERROR(tmc_motion_lock_internal(h), TAG, "lock");
+    if (tmc_motion_busy_locked(h)) {
+        tmc_motion_unlock_internal(h);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint32_t old_microsteps_per_rev = h->microsteps_per_rev;
+    uint32_t old_fullsteps_per_rev = h->fullsteps_per_rev;
+    uint32_t microsteps_per_fullstep = old_microsteps_per_rev / old_fullsteps_per_rev;
+    uint32_t new_microsteps_per_rev = (uint32_t)fullsteps_per_rev * microsteps_per_fullstep;
+    if (new_microsteps_per_rev == 0) {
+        tmc_motion_unlock_internal(h);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (old_microsteps_per_rev == new_microsteps_per_rev) {
+        h->fullsteps_per_rev = fullsteps_per_rev;
+        tmc_motion_unlock_internal(h);
+        return ESP_OK;
+    }
+
+    uint32_t raw_xactual = 0;
+    esp_err_t err = h->ops->read_register(h->chip_handle, h->ops->reg_xactual, &raw_xactual);
+    int32_t old_xactual = (int32_t)raw_xactual;
+    int32_t old_xtarget = h->xtarget;
+
+    if (err == ESP_OK) {
+        int64_t scaled_xactual = ((int64_t)old_xactual * (int64_t)new_microsteps_per_rev) /
+                                 (int64_t)old_microsteps_per_rev;
+        int64_t scaled_xtarget = ((int64_t)old_xtarget * (int64_t)new_microsteps_per_rev) /
+                                 (int64_t)old_microsteps_per_rev;
+        h->fullsteps_per_rev = fullsteps_per_rev;
+        h->microsteps_per_rev = new_microsteps_per_rev;
+        err = h->ops->write_register(h->chip_handle, h->ops->reg_xactual, (uint32_t)(int32_t)scaled_xactual);
+        if (err == ESP_OK) err = h->ops->write_register(h->chip_handle, h->ops->reg_xtarget, (uint32_t)(int32_t)scaled_xtarget);
+        if (err == ESP_OK) {
+            h->xtarget = (int32_t)scaled_xtarget;
+            err = tmc_motion_engage_position_hold_locked(h);
+        }
+        if (err != ESP_OK) {
+            h->fullsteps_per_rev = old_fullsteps_per_rev;
+            h->microsteps_per_rev = old_microsteps_per_rev;
+        }
+    }
+
+    if (err == ESP_OK) {
+        tmc_motion_clear_last_error_locked(h);
+        (void)tmc_motion_refresh_diag_locked(h);
+    } else {
+        tmc_motion_set_last_error_locked(h, err, "set fullsteps failed");
+    }
+    tmc_motion_unlock_internal(h);
+    return err;
+}
+
 esp_err_t tmc_motion_configure_motion_phys(tmc_motion_handle_t h, const tmc_motion_config_phys_t *cfg)
 {
     ESP_RETURN_ON_FALSE(h && cfg, ESP_ERR_INVALID_ARG, TAG, "null arg");
