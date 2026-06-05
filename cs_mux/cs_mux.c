@@ -4,6 +4,8 @@
 
 #include "esp_check.h"
 #include "esp_rom_sys.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "cs_mux";
 
@@ -12,9 +14,19 @@ static const char *TAG = "cs_mux";
 #define CS_MUX_ENABLE_HOLD_US   2U
 #define CS_MUX_INTER_FRAME_US   2U
 
+// Mehrere TMC-Chips teilen sich EINEN 74HC138 (Adress-GPIOs) UND den SPI-Bus.
+// Eine Transaktion ist erst sicher, wenn Kanal-Umschaltung + SPI-Transfer +
+// Abwahl als Einheit laufen — sonst kann auf einem Dual-Core-Target ein zweiter
+// Task den MUX-Kanal mitten in einer fremden Transaktion umschalten und ein
+// Datagramm landet auf dem falschen Chip (z. B. ein Gate-Velocity-Befehl auf dem
+// Foerder-Motor -> Scheibe dreht ungewollt). Der bus_lock (im gemeinsamen
+// cs_mux-Handle) serialisiert daher select_cb..deselect_cb ueber ALLE Ports.
+#define CS_MUX_BUS_LOCK_TIMEOUT_MS 1000U
+
 struct cs_mux_dev_t {
-    cs_mux_config_t cfg;
-    uint8_t         channel;
+    cs_mux_config_t   cfg;
+    uint8_t           channel;
+    SemaphoreHandle_t bus_lock;   // serialisiert select..deselect ueber alle Ports
 };
 
 static int level_for_state(bool selected, bool active_low)
@@ -51,6 +63,12 @@ esp_err_t cs_mux_init(const cs_mux_config_t *cfg, cs_mux_handle_t *out_handle)
     h->cfg = *cfg;
     h->channel = cfg->default_channel;
 
+    h->bus_lock = xSemaphoreCreateMutex();
+    if (h->bus_lock == NULL) {
+        free(h);
+        return ESP_ERR_NO_MEM;
+    }
+
     gpio_config_t io = {
         .mode = GPIO_MODE_OUTPUT,
         .pin_bit_mask = (1ULL << cfg->pin_a0) |
@@ -61,6 +79,7 @@ esp_err_t cs_mux_init(const cs_mux_config_t *cfg, cs_mux_handle_t *out_handle)
 
     esp_err_t err = gpio_config(&io);
     if (err != ESP_OK) {
+        vSemaphoreDelete(h->bus_lock);
         free(h);
         return err;
     }
@@ -71,6 +90,7 @@ esp_err_t cs_mux_init(const cs_mux_config_t *cfg, cs_mux_handle_t *out_handle)
         err = apply_address(h, h->channel);
     }
     if (err != ESP_OK) {
+        vSemaphoreDelete(h->bus_lock);
         free(h);
         return err;
     }
@@ -86,6 +106,9 @@ void cs_mux_deinit(cs_mux_handle_t handle)
     }
     int idle = level_for_state(false, handle->cfg.enable_active_low);
     (void)gpio_set_level(handle->cfg.pin_enable, idle);
+    if (handle->bus_lock != NULL) {
+        vSemaphoreDelete(handle->bus_lock);
+    }
     free(handle);
 }
 
@@ -172,17 +195,40 @@ esp_err_t cs_mux_port_set_channel(cs_mux_port_handle_t port, uint8_t channel)
     return ESP_OK;
 }
 
+// Bus-Lock VOR Kanal-Umschaltung nehmen und erst in deselect_cb wieder freigeben:
+// so sind Adress-GPIOs + SPI-Transfer (laeuft beim Aufrufer zwischen select_cb
+// und deselect_cb) + Abwahl eine atomare Einheit ueber alle Ports desselben MUX.
+// Schlaegt das Setup nach genommenem Lock fehl, wird der Lock hier wieder
+// freigegeben (deselect_cb wird vom Treiber nur nach erfolgreichem select_cb
+// aufgerufen).
 esp_err_t cs_mux_port_select_cb(void *port_as_voidp)
 {
     cs_mux_port_handle_t port = (cs_mux_port_handle_t)port_as_voidp;
     ESP_RETURN_ON_FALSE(port != NULL, ESP_ERR_INVALID_ARG, TAG, "port null");
-    ESP_RETURN_ON_ERROR(cs_mux_set_channel(port->mux, port->channel), TAG, "set channel");
-    return cs_mux_assert(port->mux);
+
+    if (port->mux->bus_lock != NULL &&
+        xSemaphoreTake(port->mux->bus_lock, pdMS_TO_TICKS(CS_MUX_BUS_LOCK_TIMEOUT_MS)) != pdTRUE) {
+        ESP_LOGE(TAG, "bus lock timeout");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    esp_err_t err = cs_mux_set_channel(port->mux, port->channel);
+    if (err == ESP_OK) {
+        err = cs_mux_assert(port->mux);
+    }
+    if (err != ESP_OK && port->mux->bus_lock != NULL) {
+        xSemaphoreGive(port->mux->bus_lock);   // Setup gescheitert -> Lock nicht halten
+    }
+    return err;
 }
 
 esp_err_t cs_mux_port_deselect_cb(void *port_as_voidp)
 {
     cs_mux_port_handle_t port = (cs_mux_port_handle_t)port_as_voidp;
     ESP_RETURN_ON_FALSE(port != NULL, ESP_ERR_INVALID_ARG, TAG, "port null");
-    return cs_mux_deassert(port->mux);
+    esp_err_t err = cs_mux_deassert(port->mux);
+    if (port->mux->bus_lock != NULL) {
+        xSemaphoreGive(port->mux->bus_lock);
+    }
+    return err;
 }
