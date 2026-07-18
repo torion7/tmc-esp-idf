@@ -69,10 +69,6 @@ void      tmc_motion_clear_last_error_locked(tmc_motion_handle_t h);
 // Diag refresh (caller holds lock).
 esp_err_t tmc_motion_refresh_diag_locked(tmc_motion_handle_t h);
 
-// Decode the unified diag struct into bool flags / counters.
-void      tmc_motion_decode_diag(const tmc_motion_diag_t *diag,
-                                 tmc_motion_decoded_diag_t *out);
-
 // Apply the current motion_phys profile (with given vmax_override) to the
 // chip. Caller holds lock. vmax_override == 0 -> use motion_phys.default_rpm.
 esp_err_t tmc_motion_apply_profile_locked(tmc_motion_handle_t h, uint32_t vmax_override);

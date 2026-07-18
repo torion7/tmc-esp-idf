@@ -265,6 +265,11 @@ esp_err_t tmc_motion_configure_stealthchop(tmc_motion_handle_t h,
 // ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------
+// Rohregister -> dekodierte Diagnose (reine Bitfeld-Dekodierung, keine
+// Hardware/kein Handle noetig — auch fuer Host-Tests nutzbar).
+void tmc_motion_decode_diag(const tmc_motion_diag_t *diag,
+                            tmc_motion_decoded_diag_t *out);
+
 esp_err_t tmc_motion_get_snapshot(tmc_motion_handle_t h, tmc_motion_snapshot_t *out);
 
 // ---------------------------------------------------------------------------

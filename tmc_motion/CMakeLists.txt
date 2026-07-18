@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/tmc_motion.c"
+        "src/tmc_motion_decode.c"
         "src/tmc_motion_units.c"
         "src/tmc_motion_motion.c"
         "src/tmc_motion_stallguard.c"
