@@ -91,6 +91,8 @@ typedef struct {
     int32_t  xactual;
     int32_t  vactual;
     uint32_t tpwmthrs;
+    uint32_t pwm_scale;   // PWM_SCALE (0x71): [9:0] sum, [24:16] auto (signed)
+    uint32_t adc_temp;    // ADC_TEMP (0x51): [12:0] raw temperature ADC value
 } tmc5240_diag_t;
 
 // ---------------------------------------------------------------------------

@@ -125,6 +125,14 @@ typedef struct {
     uint32_t cs_actual;
     uint32_t sg_result;
     uint32_t sg4_result;
+    // stealthChop-PWM (aus PWM_SCALE): Duty-Summe [0..1023], Auto-Offset
+    // (vorzeichenbehaftet) und die Summe als Prozent der Vollaussteuerung.
+    uint32_t pwm_scale_sum;
+    int32_t  pwm_scale_auto;
+    uint32_t pwm_scale_pct;
+    // Chip-Temperatur in Grad C (TMC5240-ADC, Datenblatt-Formel
+    // (ADC_TEMP - 2038) / 7.7); 0.0 wenn der Chip keinen Temp-ADC hat.
+    float    chip_temp_c;
 } tmc_motion_decoded_diag_t;
 
 typedef struct {

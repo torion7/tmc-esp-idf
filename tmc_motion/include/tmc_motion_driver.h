@@ -38,6 +38,8 @@ typedef struct {
     uint32_t tstep;
     int32_t  xactual;
     int32_t  vactual;
+    uint32_t pwm_scale;   // PWM_SCALE roh: [9:0] sum, [24:16] auto (signed)
+    uint32_t adc_temp;    // roher Temperatur-ADC-Wert (nur TMC5240; sonst 0)
 } tmc_motion_diag_t;
 
 // ---------------------------------------------------------------------------

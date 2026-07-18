@@ -63,6 +63,8 @@ static esp_err_t a_collect_diag(void *c, tmc_motion_diag_t *out) {
     out->tstep          = d.tstep;
     out->xactual        = d.xactual;
     out->vactual        = d.vactual;
+    out->pwm_scale      = d.pwm_scale;
+    out->adc_temp       = 0;   // TMC5160 hat keinen Temperatur-ADC
     return ESP_OK;
 }
 

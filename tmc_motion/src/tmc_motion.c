@@ -91,6 +91,23 @@ void tmc_motion_decode_diag(const tmc_motion_diag_t *diag, tmc_motion_decoded_di
     out->cs_actual        = (diag->drv_status >> 16) & 0x1FU;
     out->sg_result        =  diag->drv_status        & 0x3FFU;
     out->sg4_result       =  diag->sg4_result        & 0x3FFU;
+
+    // stealthChop-PWM-Aussteuerung (PWM_SCALE 0x71, Layout auf 5160 und
+    // 5240 identisch): [9:0] Summe, [24:16] Auto-Anteil als 9-bit signed.
+    out->pwm_scale_sum    = diag->pwm_scale & 0x3FFU;
+    int32_t auto9         = (int32_t)((diag->pwm_scale >> 16) & 0x1FFU);
+    if (auto9 & 0x100) {
+        auto9 -= 0x200;                    // 9-bit Zweierkomplement
+    }
+    out->pwm_scale_auto   = auto9;
+    out->pwm_scale_pct    = (out->pwm_scale_sum * 100U) / 1023U;
+
+    // Chip-Temperatur (nur Chips mit Temperatur-ADC, aktuell TMC5240):
+    // T[degC] = (ADC_TEMP - 2038) / 7.7 (Datenblatt). adc_temp==0 heisst
+    // "kein/kein gelesener Sensor" -> 0.0 statt unsinniger -264 degC.
+    out->chip_temp_c      = (diag->adc_temp != 0U)
+                                ? ((float)diag->adc_temp - 2038.0f) / 7.7f
+                                : 0.0f;
 }
 
 esp_err_t tmc_motion_refresh_diag_locked(tmc_motion_handle_t h)

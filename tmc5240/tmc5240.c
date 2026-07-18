@@ -682,6 +682,9 @@ esp_err_t tmc5240_collect_diag(tmc5240_handle_t handle, tmc5240_diag_t *diag)
     ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_RAMP_STAT,  &diag->ramp_stat),  TAG, "RAMP_STAT");
     ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_DRV_STATUS, &diag->drv_status), TAG, "DRV_STATUS");
     ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_SG4_RESULT, &diag->sg4_result), TAG, "SG4_RESULT");
+    ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_PWM_SCALE,  &diag->pwm_scale),  TAG, "PWM_SCALE");
+    ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_ADC_TEMP,   &diag->adc_temp),   TAG, "ADC_TEMP");
+    diag->adc_temp &= 0x1FFFU;   // 13-bit ADC value
 
     uint32_t raw_xactual = 0, raw_vactual = 0, raw_tstep = 0;
     ESP_RETURN_ON_ERROR(tmc5240_read_register(handle, TMC5240_REG_XACTUAL, &raw_xactual), TAG, "XACTUAL");

@@ -88,6 +88,7 @@ typedef struct {
     int32_t  xactual;
     int32_t  vactual;
     uint32_t tpwmthrs;
+    uint32_t pwm_scale;   // PWM_SCALE (0x71): [9:0] sum, [24:16] auto (signed)
 } tmc5160_diag_t;
 
 // ---------------------------------------------------------------------------

@@ -617,6 +617,7 @@ esp_err_t tmc5160_collect_diag(tmc5160_handle_t handle, tmc5160_diag_t *diag)
     ESP_RETURN_ON_ERROR(tmc5160_read_register(handle, TMC5160_REG_SW_MODE,    &diag->sw_mode),    TAG, "SW_MODE");
     ESP_RETURN_ON_ERROR(tmc5160_read_register(handle, TMC5160_REG_RAMP_STAT,  &diag->ramp_stat),  TAG, "RAMP_STAT");
     ESP_RETURN_ON_ERROR(tmc5160_read_register(handle, TMC5160_REG_DRV_STATUS, &diag->drv_status), TAG, "DRV_STATUS");
+    ESP_RETURN_ON_ERROR(tmc5160_read_register(handle, TMC5160_REG_PWM_SCALE,  &diag->pwm_scale),  TAG, "PWM_SCALE");
 
     uint32_t raw_xactual = 0, raw_vactual = 0, raw_tstep = 0;
     ESP_RETURN_ON_ERROR(tmc5160_read_register(handle, TMC5160_REG_XACTUAL, &raw_xactual), TAG, "XACTUAL");

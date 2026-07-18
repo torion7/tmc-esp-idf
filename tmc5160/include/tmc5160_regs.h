@@ -39,6 +39,7 @@ enum {
     TMC5160_REG_COOLCONF     = 0x6D,
     TMC5160_REG_DRV_STATUS   = 0x6F,
     TMC5160_REG_PWMCONF      = 0x70,
+    TMC5160_REG_PWM_SCALE    = 0x71,
 };
 
 #ifdef __cplusplus
