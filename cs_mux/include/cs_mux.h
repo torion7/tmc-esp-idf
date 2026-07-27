@@ -56,9 +56,21 @@ esp_err_t cs_mux_deselect_cb(void *handle_as_voidp);
 // its own downstream chip. The select callback always re-applies the
 // port's channel before asserting the enable line.
 //
-// Threading note: the underlying address pins are shared state. Callers
-// must serialize SPI transactions across all ports of the same MUX (a
-// single application-level mutex around each driver call is enough).
+// Threading note: the shared address pins are serialized internally. The
+// port select callback takes a bus lock and holds it until the matching
+// deselect callback returns, so channel switch + SPI transfer + deassert
+// form one atomic unit across all ports of the same MUX. Callers no longer
+// need their own mutex around a single driver call.
+//
+// The scope is one select..deselect span, i.e. a single SPI datagram.
+// Callers that need several datagrams to stay together (e.g. the
+// request/fetch pair of a TMC register read) must still add their own lock
+// on top.
+//
+// The `cs_mux_select_cb`/`cs_mux_deselect_cb` adapters above and direct
+// `cs_mux_set_channel`/`cs_mux_assert`/`cs_mux_deassert` calls drive the
+// address pins WITHOUT taking the bus lock — do not mix them with port
+// callbacks on a live MUX.
 // ---------------------------------------------------------------------------
 typedef struct cs_mux_port_t *cs_mux_port_handle_t;
 
