@@ -54,16 +54,25 @@ enum {
     TMC5240_REG_SG4_RESULT   = 0x75,
 };
 
-// DRV_CONF.current_range bits [1:0] select the full-scale current reference.
-// With external sense resistors the V_FS reference voltage scales accordingly:
-//   0 -> low,        1 -> 250mA range,  2 -> 333mA range,  3 -> 500mA range
-// (see TMC5240 datasheet section "DRV_CONF"). Use 3 to match the TMC5160's
-// default 0.325V V_FS behaviour.
+// DRV_CONF.current_range bits [1:0] select the KIFS constant that, together
+// with the external reference resistor RREF at pin IREF, sets the full-scale
+// current:  IFS_peak = KIFS / RREF,  IFS_rms = IFS_peak / sqrt(2).
+//
+// It ALSO sets the overcurrent trip point. Prefer the lowest range that still
+// covers the motor — finer resolution and earlier protection.
+//
+//   value  KIFS [A*kOhm]  IFS_rms @ RREF=12k   OCP trip
+//   0b00      11.75            0.692 A          1.67 A
+//   0b01      24.0             1.414 A          3.33 A
+//   0b10      36.0             2.121 A          5.00 A
+//   0b11      36.0             2.121 A          5.00 A   (identical to 0b10)
+//
+// There is NO V_FS and NO sense resistor on this part — see tmc5240.h.
 enum {
-    TMC5240_CURRENT_RANGE_LOW    = 0,
-    TMC5240_CURRENT_RANGE_MEDIUM = 1,
-    TMC5240_CURRENT_RANGE_HIGH   = 2,
-    TMC5240_CURRENT_RANGE_MAX    = 3,
+    TMC5240_CURRENT_RANGE_1A = 0,
+    TMC5240_CURRENT_RANGE_2A = 1,
+    TMC5240_CURRENT_RANGE_3A = 2,
+    TMC5240_CURRENT_RANGE_3A_ALT = 3,   // laut Datenblatt identisch zu 0b10
 };
 
 #ifdef __cplusplus

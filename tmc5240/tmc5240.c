@@ -22,10 +22,20 @@ static const char *TAG = "tmc5240";
 #define TMC_GLOBAL_SCALER_FULL_SCALE 256U
 #define TMC_GLOBAL_SCALER_MIN_ALLOWED 32U
 
-// V_FS reference voltage selected by DRV_CONF.current_range bits [1:0].
-// (Approximate values from the TMC5240 datasheet; used as the scale
-// reference inside the current-to-IRUN/GLOBALSCALER lookup.)
-static const float TMC_VFS_VOLTS[4] = { 0.18f, 0.227f, 0.290f, 0.325f };
+// KIFS constant selected by DRV_CONF.current_range bits [1:0], in A*kOhm.
+// Datasheet: IFS_peak = KIFS / RREF. Values 2 and 3 are identical.
+//
+// This REPLACES an earlier V_FS / R_SENSE model that had been carried over
+// from the TMC5160. The TMC5240 has no sense resistors and no V_FS — it
+// measures across the RDS(on) of its own output stage and derives the full
+// scale from the external reference resistor at pin IREF. The old model
+// under-delivered current by roughly 31 % at range 3 with a 75 mOhm
+// assumption, and its scaler search rounded small requests UP.
+static const float TMC_KIFS_A_KOHM[4] = { 11.75f, 24.0f, 36.0f, 36.0f };
+
+#define TMC_RREF_OHM_DEFAULT 12000U
+#define TMC_RREF_OHM_MIN     12000U
+#define TMC_RREF_OHM_MAX     60000U
 
 // ===========================================================================
 // Default values used in apply_defaults
@@ -48,6 +58,7 @@ struct tmc5240_dev_t {
     uint32_t shadow_ihold_irun;
     uint8_t  shadow_tpowerdown;
     uint8_t  shadow_global_scaler;
+    float    realized_rms_ma;          // was set_rms_current_ma zuletzt wirklich stellte
     uint32_t shadow_tcoolthrs;
     uint32_t shadow_coolconf;
     uint32_t shadow_gconf;
@@ -123,58 +134,92 @@ static esp_err_t tmc_spi_xfer(struct tmc5240_dev_t *dev, const uint8_t tx[5], ui
 // ===========================================================================
 // Current scaling math
 // ===========================================================================
-static float tmc_fullscale_irms_amps(float rsense_ohm, uint8_t current_range)
+static uint32_t tmc_clamp_rref(uint32_t rref_ohm)
 {
-    float vfs = TMC_VFS_VOLTS[current_range & 0x3];
-    return vfs / (rsense_ohm * 1.41421356f);
+    if (rref_ohm == 0)                 return TMC_RREF_OHM_DEFAULT;
+    if (rref_ohm < TMC_RREF_OHM_MIN)   return TMC_RREF_OHM_MIN;
+    if (rref_ohm > TMC_RREF_OHM_MAX)   return TMC_RREF_OHM_MAX;
+    return rref_ohm;
 }
 
+float tmc5240_fullscale_rms_ma(uint8_t current_range, uint32_t rref_ohm)
+{
+    float kifs   = TMC_KIFS_A_KOHM[current_range & 0x3];
+    float rref_k = (float)tmc_clamp_rref(rref_ohm) / 1000.0f;
+    // KIFS [A*kOhm] / RREF [kOhm] = IFS peak [A]; /sqrt(2) -> RMS; *1000 -> mA
+    return (kifs / rref_k) / 1.41421356f * 1000.0f;
+}
+
+static float tmc_fullscale_irms_amps(uint32_t rref_ohm, uint8_t current_range)
+{
+    return tmc5240_fullscale_rms_ma(current_range, rref_ohm) / 1000.0f;
+}
+
+// Sucht das GLOBALSCALER/IRUN-Paar, dessen Produkt (GS/256)*((IRUN+1)/32)
+// dem Zielwert am naechsten kommt, OHNE nennenswert darueber zu liegen.
+//
+// Wichtig gegenueber der frueheren Fassung:
+//   * Es gibt keine kuenstliche Untergrenze mehr. Die alte Variante verlangte
+//     im ersten Durchlauf IRUN >= 16 UND GS >= 128 und kehrte beim ersten
+//     Treffer zurueck — die weiteren Durchlaeufe waren damit toter Code. Die
+//     kleinste darstellbare Skalierung war (128/256)*(17/32) = 0,2656, und
+//     jede kleinere Anforderung wurde stillschweigend darauf ANGEHOBEN.
+//     Bei Range 3 / RREF 12k hiess das: 200 mA angefordert, ~563 mA gestellt.
+//   * Jetzt reicht der Bereich bis (32/256)*(1/32) = 0,0039 hinunter.
+//   * GLOBALSCALER 1..31 wird nie erzeugt (laut Datenblatt unzulaessig).
+//   * Bei gleichem Fehler gewinnt das hoehere IRUN: das Datenblatt empfiehlt
+//     IRUN 16..31 und die Feinabstimmung ueber GLOBALSCALER; unter IRUN 8
+//     arbeitet die StealthChop2-Autoregelung nicht mehr sauber.
 static tmc5240_current_scaling_t tmc_choose_current_scalers(float target_scale)
 {
     tmc5240_current_scaling_t best = {
-        .global_scaler_reg = 0,
+        .global_scaler_reg = 0,      // 0 = Vollausschlag (256)
         .irun_reg          = 31,
     };
-    float best_error = 1e9f;
 
-    if (target_scale <= 0.0f || target_scale >= 1.0f) {
+    if (target_scale >= 1.0f) return best;
+    if (target_scale <= 0.0f) {
+        best.global_scaler_reg = (uint8_t)TMC_GLOBAL_SCALER_MIN_ALLOWED;
+        best.irun_reg          = 0;
         return best;
     }
 
-    for (int pass = 0; pass < 3; ++pass) {
-        bool found = false;
+    float best_error = 1e9f;
+    bool  found      = false;
 
-        for (uint32_t gs_eff = TMC_GLOBAL_SCALER_MIN_ALLOWED;
-             gs_eff <= TMC_GLOBAL_SCALER_FULL_SCALE;
-             ++gs_eff) {
-            if (gs_eff > 255U && gs_eff != TMC_GLOBAL_SCALER_FULL_SCALE) {
-                continue;
+    for (int irun = 31; irun >= 0; --irun) {
+        float irun_f = (float)(irun + 1) / 32.0f;
+        float gs_ideal = target_scale / irun_f * 256.0f;
+
+        // Ab- und aufgerundeten Kandidaten pruefen, damit der naechstgelegene
+        // gueltige Punkt sicher getroffen wird.
+        for (int rounding = 0; rounding < 2; ++rounding) {
+            float gs_f = (rounding == 0) ? floorf(gs_ideal) : ceilf(gs_ideal);
+            if (gs_f > (float)TMC_GLOBAL_SCALER_FULL_SCALE) gs_f = (float)TMC_GLOBAL_SCALER_FULL_SCALE;
+            uint32_t gs_eff = (uint32_t)gs_f;
+            if (gs_eff < TMC_GLOBAL_SCALER_MIN_ALLOWED) continue;
+
+            float realized = ((float)gs_eff / 256.0f) * irun_f;
+            // Nie mehr Strom liefern als verlangt (2 % Toleranz fuer die
+            // Rasterung) — zu wenig Drehmoment ist harmlos, zu viel nicht.
+            if (realized > target_scale * 1.02f) continue;
+
+            float error = fabsf(realized - target_scale);
+            if (!found || error < best_error) {
+                best.global_scaler_reg = (gs_eff == TMC_GLOBAL_SCALER_FULL_SCALE)
+                                             ? 0U : (uint8_t)gs_eff;
+                best.irun_reg          = (uint8_t)irun;
+                best_error             = error;
+                found                  = true;
             }
-
-            for (uint32_t irun = 0; irun <= 31; ++irun) {
-                if (pass == 0 && (irun < 16U || gs_eff < 128U)) {
-                    continue;
-                }
-                if (pass == 1 && irun < 16U) {
-                    continue;
-                }
-
-                float realized = ((float)gs_eff / 256.0f) * ((float)(irun + 1U) / 32.0f);
-                float error = fabsf(realized - target_scale);
-                if (!found || error < best_error) {
-                    best.global_scaler_reg = (gs_eff == TMC_GLOBAL_SCALER_FULL_SCALE) ? 0U : (uint8_t)gs_eff;
-                    best.irun_reg          = (uint8_t)irun;
-                    best_error             = error;
-                    found                  = true;
-                }
-            }
-        }
-
-        if (found) {
-            return best;
         }
     }
 
+    if (!found) {
+        // Ziel liegt unter der kleinsten darstellbaren Stufe.
+        best.global_scaler_reg = (uint8_t)TMC_GLOBAL_SCALER_MIN_ALLOWED;
+        best.irun_reg          = 0;
+    }
     return best;
 }
 
@@ -261,7 +306,7 @@ esp_err_t tmc5240_init(const tmc5240_config_t *cfg, tmc5240_handle_t *out_handle
 
     dev->cfg = *cfg;
     if (dev->cfg.spi_clock_hz == 0)    dev->cfg.spi_clock_hz    = 1000000;
-    if (dev->cfg.rsense_milliohm == 0) dev->cfg.rsense_milliohm = 75;
+    dev->cfg.rref_ohm = tmc_clamp_rref(dev->cfg.rref_ohm);
     dev->enable_active_low_runtime = dev->cfg.enable_active_low;
     dev->current_range             = dev->cfg.current_range;
 
@@ -463,7 +508,40 @@ esp_err_t tmc5240_apply_defaults(tmc5240_handle_t handle, const tmc5240_defaults
 esp_err_t tmc5240_set_global_scaler(tmc5240_handle_t handle, uint8_t scaler)
 {
     ESP_RETURN_ON_FALSE(handle != NULL, ESP_ERR_INVALID_ARG, TAG, "handle null");
+    // Datenblatt: "1 ... 31: Not allowed for operation". Was der Chip in dem
+    // Band tatsaechlich tut, ist nicht spezifiziert — also gar nicht erst
+    // hinschreiben, statt auf gutmuetiges Verhalten zu hoffen.
+    ESP_RETURN_ON_FALSE(scaler == 0 || scaler >= (uint8_t)TMC_GLOBAL_SCALER_MIN_ALLOWED,
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "GLOBALSCALER %u unzulaessig (0 oder 32..255)", (unsigned)scaler);
     return tmc5240_write_register(handle, TMC5240_REG_GLOBALSCALER, scaler);
+}
+
+esp_err_t tmc5240_set_rref_ohm(tmc5240_handle_t handle, uint32_t rref_ohm)
+{
+    ESP_RETURN_ON_FALSE(handle != NULL, ESP_ERR_INVALID_ARG, TAG, "handle null");
+    struct tmc5240_dev_t *dev = handle;
+    uint32_t clamped = tmc_clamp_rref(rref_ohm);
+    if (clamped != rref_ohm && rref_ohm != 0) {
+        ESP_LOGW(TAG, "RREF %lu Ohm ausserhalb %u..%u — auf %lu geklemmt",
+                 (unsigned long)rref_ohm, TMC_RREF_OHM_MIN, TMC_RREF_OHM_MAX,
+                 (unsigned long)clamped);
+    }
+    dev->cfg.rref_ohm = clamped;
+    return ESP_OK;
+}
+
+float tmc5240_get_fullscale_rms_ma(tmc5240_handle_t handle)
+{
+    if (!handle) return 0.0f;
+    struct tmc5240_dev_t *dev = handle;
+    return tmc5240_fullscale_rms_ma(dev->current_range, dev->cfg.rref_ohm);
+}
+
+float tmc5240_get_realized_rms_ma(tmc5240_handle_t handle)
+{
+    if (!handle) return 0.0f;
+    return ((struct tmc5240_dev_t *)handle)->realized_rms_ma;
 }
 
 esp_err_t tmc5240_set_current_range(tmc5240_handle_t handle, uint8_t range)
@@ -483,10 +561,26 @@ esp_err_t tmc5240_set_rms_current_ma(tmc5240_handle_t handle, uint16_t irms_ma, 
     ESP_RETURN_ON_FALSE(hold_percent <= 100, ESP_ERR_INVALID_ARG, TAG, "hold percent invalid");
 
     struct tmc5240_dev_t *dev = handle;
-    float rsense          = (float)dev->cfg.rsense_milliohm / 1000.0f;
-    float fullscale_irms  = tmc_fullscale_irms_amps(rsense, dev->current_range);
+    float fullscale_irms  = tmc_fullscale_irms_amps(dev->cfg.rref_ohm, dev->current_range);
     float target_scale    = ((float)irms_ma / 1000.0f) / fullscale_irms;
-    if (target_scale > 1.0f) target_scale = 1.0f;
+    if (target_scale > 1.0f) {
+        ESP_LOGW(TAG, "%u mA ueberschreitet den Vollausschlag von %.0f mA "
+                      "(Range %u, RREF %lu Ohm) — auf Vollausschlag begrenzt",
+                 (unsigned)irms_ma, (double)(fullscale_irms * 1000.0f),
+                 (unsigned)dev->current_range, (unsigned long)dev->cfg.rref_ohm);
+        target_scale = 1.0f;
+    }
+
+    // Kleinste darstellbare Stufe ist (32/256)*(1/32) = 1/256 des
+    // Vollausschlags. Darunter kann die Suche nur noch nach OBEN abweichen —
+    // das muss gesagt werden, statt es stillschweigend zu tun.
+    float min_ma = fullscale_irms * 1000.0f / 256.0f;
+    if ((float)irms_ma < min_ma) {
+        ESP_LOGW(TAG, "%u mA liegt unter der kleinsten einstellbaren Stufe von "
+                      "%.1f mA (Range %u, RREF %lu Ohm) — es werden %.1f mA gestellt",
+                 (unsigned)irms_ma, (double)min_ma, (unsigned)dev->current_range,
+                 (unsigned long)dev->cfg.rref_ohm, (double)min_ma);
+    }
 
     tmc5240_current_scaling_t scaling = tmc_choose_current_scalers(target_scale);
     uint8_t  ihold       = tmc_hold_current_from_percent(scaling.irun_reg, hold_percent);
@@ -496,7 +590,18 @@ esp_err_t tmc5240_set_rms_current_ma(tmc5240_handle_t handle, uint16_t irms_ma, 
          ((uint32_t)6                            << 16);
 
     ESP_RETURN_ON_ERROR(tmc5240_set_global_scaler(handle, scaling.global_scaler_reg), TAG, "set GLOBALSCALER");
-    return tmc5240_write_register(handle, TMC5240_REG_IHOLD_IRUN, ihold_irun);
+    ESP_RETURN_ON_ERROR(tmc5240_write_register(handle, TMC5240_REG_IHOLD_IRUN, ihold_irun),
+                        TAG, "set IHOLD_IRUN");
+
+    // Tatsaechlich gestellten Wert merken: GLOBALSCALER und IRUN sind grobe
+    // Stufen, der realisierte Strom weicht vom Wunsch ab. Ein UI, das nur den
+    // Wunschwert anzeigt, verschweigt das.
+    uint32_t gs_eff = (scaling.global_scaler_reg == 0)
+                          ? TMC_GLOBAL_SCALER_FULL_SCALE : scaling.global_scaler_reg;
+    dev->realized_rms_ma = fullscale_irms * 1000.0f
+                         * ((float)gs_eff / 256.0f)
+                         * ((float)(scaling.irun_reg + 1U) / 32.0f);
+    return ESP_OK;
 }
 
 // ===========================================================================

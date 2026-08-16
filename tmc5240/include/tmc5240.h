@@ -5,9 +5,26 @@
 // flexibility (native CS pin or callback-based CS via `cs_ops`).
 //
 // Key TMC5240 differences vs. TMC5160 handled here:
-//   - DRV_CONF carries a `current_range` field selecting one of four V_FS
-//     reference voltages used by the current scaler.
-//   - GLOBALSCALER accepts the full 0..255 range (TMC5160 disallowed 1..31).
+//   - NO SENSE RESISTORS. The TMC5240 measures coil current across the
+//     RDS(on) of its own power MOSFETs ("integrated current sensing").
+//     The full-scale current is set by an external reference resistor
+//     RREF from pin IREF to GND, together with DRV_CONF.current_range:
+//
+//         IFS_peak = KIFS[current_range] / RREF
+//         KIFS     = { 11.75, 24, 36, 36 }  [A * kOhm]
+//         IFS_rms  = IFS_peak / sqrt(2)
+//
+//     RREF is a low-power signal resistor (it carries no motor current);
+//     the datasheet allows 12 kOhm .. 60 kOhm, and specifies the +-5 %
+//     regulation accuracy only over 12 kOhm .. 24 kOhm.
+//     There is no V_FS and no `vsense` bit on this part — do NOT port the
+//     TMC5160's V_FS / R_SENSE maths over.
+//   - current_range also sets the OVERCURRENT TRIP POINT (1.67 / 3.33 /
+//     5.0 A). Prefer the lowest range that covers the motor: it gives both
+//     the finest current resolution and the earliest protection.
+//     Values 2 and 3 are documented as identical.
+//   - GLOBALSCALER 1..31 is "not allowed for operation" (same restriction
+//     as the TMC5160). 0 means full scale (= 256).
 //
 // All other operations (motion control, StallGuard, CoolStep, StealthChop,
 // register access) follow the same protocol as the TMC5160.
@@ -51,12 +68,14 @@ typedef struct {
     gpio_num_t pin_enable;
     bool       enable_active_low;
 
-    // Sense resistor used for current scaling (0 -> default 75 mOhm).
-    uint32_t rsense_milliohm;
+    // External reference resistor from pin IREF to GND, in ohms. This is a
+    // BOARD property — read it off the schematic, it cannot be detected.
+    // Every current the driver computes scales with 1/rref_ohm.
+    // 0 -> default 12000; values outside 12000..60000 are clamped.
+    uint32_t rref_ohm;
 
     // DRV_CONF.current_range bits [1:0] (see TMC5240_CURRENT_RANGE_*).
-    // Default (0) maps to TMC5240_CURRENT_RANGE_LOW. Pass MAX to match
-    // the TMC5160 V_FS = 0.325 V behaviour.
+    // Selects KIFS and the overcurrent trip point.
     uint8_t current_range;
 } tmc5240_config_t;
 
@@ -122,11 +141,34 @@ esp_err_t tmc5240_apply_defaults(tmc5240_handle_t handle, const tmc5240_defaults
 // Current scaling
 // ---------------------------------------------------------------------------
 esp_err_t tmc5240_set_rms_current_ma(tmc5240_handle_t handle, uint16_t irms_ma, uint8_t hold_percent);
+
+// Rejects 1..31 with ESP_ERR_INVALID_ARG — that band is not allowed for
+// operation. 0 = full scale (256).
 esp_err_t tmc5240_set_global_scaler  (tmc5240_handle_t handle, uint8_t scaler);
 
-// Update DRV_CONF.current_range (0..3). The internal current scaler will
-// use the new V_FS reference on the next set_rms_current_ma() call.
+// Update DRV_CONF.current_range (0..3). Takes effect on the next
+// set_rms_current_ma() call. Also moves the overcurrent trip point.
 esp_err_t tmc5240_set_current_range  (tmc5240_handle_t handle, uint8_t range);
+
+// Update the board's reference resistor at runtime (0 -> 12000, clamped to
+// 12000..60000). Does not touch the chip; affects subsequent current maths.
+esp_err_t tmc5240_set_rref_ohm       (tmc5240_handle_t handle, uint32_t rref_ohm);
+
+// ---------------------------------------------------------------------------
+// Current maths, exposed so a UI can show what is actually achievable.
+// ---------------------------------------------------------------------------
+// Full-scale RMS coil current in mA for a range/RREF pair. Pure function —
+// no handle, no hardware, usable in host tests and for UI previews.
+float tmc5240_fullscale_rms_ma(uint8_t current_range, uint32_t rref_ohm);
+
+// Same for the handle's configured range and RREF.
+float tmc5240_get_fullscale_rms_ma(tmc5240_handle_t handle);
+
+// What the last successful tmc5240_set_rms_current_ma() actually realized,
+// in mA RMS. GLOBALSCALER and IRUN are coarse steps, so the realized value
+// can differ noticeably from the requested one — especially at low currents.
+// Returns 0.0 before the first current has been set.
+float tmc5240_get_realized_rms_ma(tmc5240_handle_t handle);
 
 // ---------------------------------------------------------------------------
 // Motion control
