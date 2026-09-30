@@ -22,6 +22,7 @@ static const char *TAG = "tmc5160";
 #define TMC_GLOBAL_SCALER_FULL_SCALE 256U
 #define TMC_GLOBAL_SCALER_MIN_ALLOWED 32U
 #define TMC_CURRENT_FULL_SCALE_VOLTS 0.325f
+#define TMC_RSENSE_MOHM_DEFAULT      75U
 
 // ===========================================================================
 // Default values used in apply_defaults
@@ -47,6 +48,7 @@ struct tmc5160_dev_t {
     uint32_t shadow_ihold_irun;
     uint8_t  shadow_tpowerdown;
     uint8_t  shadow_global_scaler;
+    float    realized_rms_ma;          // was set_rms_current_ma zuletzt wirklich stellte
     uint32_t shadow_tcoolthrs;
     uint32_t shadow_coolconf;
     uint32_t shadow_gconf;
@@ -122,57 +124,89 @@ static esp_err_t tmc_spi_xfer(struct tmc5160_dev_t *dev, const uint8_t tx[5], ui
 // ===========================================================================
 // Current scaling math
 // ===========================================================================
-static float tmc_fullscale_irms_amps(float rsense_ohm)
+static uint32_t tmc_rsense_or_default(uint32_t rsense_milliohm)
 {
-    return TMC_CURRENT_FULL_SCALE_VOLTS / (rsense_ohm * 1.41421356f);
+    return rsense_milliohm == 0 ? TMC_RSENSE_MOHM_DEFAULT : rsense_milliohm;
 }
 
+float tmc5160_fullscale_rms_ma(uint32_t rsense_milliohm)
+{
+    float rsense_ohm = (float)tmc_rsense_or_default(rsense_milliohm) / 1000.0f;
+    // V_FS [V] / RSENSE [Ohm] = IFS peak [A]; /sqrt(2) -> RMS; *1000 -> mA
+    return TMC_CURRENT_FULL_SCALE_VOLTS / rsense_ohm / 1.41421356f * 1000.0f;
+}
+
+static float tmc_fullscale_irms_amps(uint32_t rsense_milliohm)
+{
+    return tmc5160_fullscale_rms_ma(rsense_milliohm) / 1000.0f;
+}
+
+// Sucht das GLOBALSCALER/IRUN-Paar, dessen Produkt (GS/256)*((IRUN+1)/32)
+// dem Zielwert am naechsten kommt, OHNE nennenswert darueber zu liegen.
+// Dieselbe Suche wie in tmc5240.c — nur der Vollausschlag unterscheidet sich.
+//
+// Wichtig gegenueber der frueheren Fassung:
+//   * Es gibt keine kuenstliche Untergrenze mehr. Die alte Variante verlangte
+//     im ersten Durchlauf IRUN >= 16 UND GS >= 128 und kehrte beim ersten
+//     Treffer zurueck — die weiteren Durchlaeufe waren damit toter Code. Die
+//     kleinste darstellbare Skalierung war (128/256)*(17/32) = 0,2656, und
+//     jede kleinere Anforderung wurde stillschweigend darauf ANGEHOBEN.
+//     Bei 75 mOhm hiess das: 500 mA angefordert, ~814 mA gestellt.
+//   * Jetzt reicht der Bereich bis (32/256)*(1/32) = 0,0039 hinunter.
+//   * GLOBALSCALER 1..31 wird nie erzeugt (laut Datenblatt unzulaessig).
+//   * Bei gleichem Fehler gewinnt das hoehere IRUN: das Datenblatt empfiehlt
+//     IRUN 16..31 und die Feinabstimmung ueber GLOBALSCALER; unter IRUN 8
+//     arbeitet die StealthChop2-Autoregelung nicht mehr sauber.
 static tmc5160_current_scaling_t tmc_choose_current_scalers(float target_scale)
 {
     tmc5160_current_scaling_t best = {
-        .global_scaler_reg = 0,
+        .global_scaler_reg = 0,      // 0 = Vollausschlag (256)
         .irun_reg          = 31,
     };
-    float best_error = 1e9f;
 
-    if (target_scale <= 0.0f || target_scale >= 1.0f) {
+    if (target_scale >= 1.0f) return best;
+    if (target_scale <= 0.0f) {
+        best.global_scaler_reg = (uint8_t)TMC_GLOBAL_SCALER_MIN_ALLOWED;
+        best.irun_reg          = 0;
         return best;
     }
 
-    for (int pass = 0; pass < 3; ++pass) {
-        bool found = false;
+    float best_error = 1e9f;
+    bool  found      = false;
 
-        for (uint32_t gs_eff = TMC_GLOBAL_SCALER_MIN_ALLOWED;
-             gs_eff <= TMC_GLOBAL_SCALER_FULL_SCALE;
-             ++gs_eff) {
-            if (gs_eff > 255U && gs_eff != TMC_GLOBAL_SCALER_FULL_SCALE) {
-                continue;
+    for (int irun = 31; irun >= 0; --irun) {
+        float irun_f = (float)(irun + 1) / 32.0f;
+        float gs_ideal = target_scale / irun_f * 256.0f;
+
+        // Ab- und aufgerundeten Kandidaten pruefen, damit der naechstgelegene
+        // gueltige Punkt sicher getroffen wird.
+        for (int rounding = 0; rounding < 2; ++rounding) {
+            float gs_f = (rounding == 0) ? floorf(gs_ideal) : ceilf(gs_ideal);
+            if (gs_f > (float)TMC_GLOBAL_SCALER_FULL_SCALE) gs_f = (float)TMC_GLOBAL_SCALER_FULL_SCALE;
+            uint32_t gs_eff = (uint32_t)gs_f;
+            if (gs_eff < TMC_GLOBAL_SCALER_MIN_ALLOWED) continue;
+
+            float realized = ((float)gs_eff / 256.0f) * irun_f;
+            // Nie mehr Strom liefern als verlangt (2 % Toleranz fuer die
+            // Rasterung) — zu wenig Drehmoment ist harmlos, zu viel nicht.
+            if (realized > target_scale * 1.02f) continue;
+
+            float error = fabsf(realized - target_scale);
+            if (!found || error < best_error) {
+                best.global_scaler_reg = (gs_eff == TMC_GLOBAL_SCALER_FULL_SCALE)
+                                             ? 0U : (uint8_t)gs_eff;
+                best.irun_reg          = (uint8_t)irun;
+                best_error             = error;
+                found                  = true;
             }
-
-            for (uint32_t irun = 0; irun <= 31; ++irun) {
-                if (pass == 0 && (irun < 16U || gs_eff < 128U)) {
-                    continue;
-                }
-                if (pass == 1 && irun < 16U) {
-                    continue;
-                }
-
-                float realized = ((float)gs_eff / 256.0f) * ((float)(irun + 1U) / 32.0f);
-                float error = fabsf(realized - target_scale);
-                if (!found || error < best_error) {
-                    best.global_scaler_reg = (gs_eff == TMC_GLOBAL_SCALER_FULL_SCALE) ? 0U : (uint8_t)gs_eff;
-                    best.irun_reg          = (uint8_t)irun;
-                    best_error             = error;
-                    found                  = true;
-                }
-            }
-        }
-
-        if (found) {
-            return best;
         }
     }
 
+    if (!found) {
+        // Ziel liegt unter der kleinsten darstellbaren Stufe.
+        best.global_scaler_reg = (uint8_t)TMC_GLOBAL_SCALER_MIN_ALLOWED;
+        best.irun_reg          = 0;
+    }
     return best;
 }
 
@@ -258,7 +292,7 @@ esp_err_t tmc5160_init(const tmc5160_config_t *cfg, tmc5160_handle_t *out_handle
 
     dev->cfg = *cfg;
     if (dev->cfg.spi_clock_hz == 0)    dev->cfg.spi_clock_hz    = 1000000;
-    if (dev->cfg.rsense_milliohm == 0) dev->cfg.rsense_milliohm = 75;
+    dev->cfg.rsense_milliohm = tmc_rsense_or_default(dev->cfg.rsense_milliohm);
     dev->enable_active_low_runtime = dev->cfg.enable_active_low;
 
     // Copy cs_ops by value so the caller's pointer needs no extra lifetime.
@@ -461,6 +495,27 @@ esp_err_t tmc5160_set_global_scaler(tmc5160_handle_t handle, uint8_t scaler)
     return tmc5160_write_register(handle, TMC5160_REG_GLOBALSCALER, scaler);
 }
 
+esp_err_t tmc5160_set_rsense_milliohm(tmc5160_handle_t handle, uint32_t rsense_milliohm)
+{
+    ESP_RETURN_ON_FALSE(handle != NULL, ESP_ERR_INVALID_ARG, TAG, "handle null");
+    struct tmc5160_dev_t *dev = handle;
+    dev->cfg.rsense_milliohm = tmc_rsense_or_default(rsense_milliohm);
+    return ESP_OK;
+}
+
+float tmc5160_get_fullscale_rms_ma(tmc5160_handle_t handle)
+{
+    if (!handle) return 0.0f;
+    struct tmc5160_dev_t *dev = handle;
+    return tmc5160_fullscale_rms_ma(dev->cfg.rsense_milliohm);
+}
+
+float tmc5160_get_realized_rms_ma(tmc5160_handle_t handle)
+{
+    if (!handle) return 0.0f;
+    return ((struct tmc5160_dev_t *)handle)->realized_rms_ma;
+}
+
 esp_err_t tmc5160_set_rms_current_ma(tmc5160_handle_t handle, uint16_t irms_ma, uint8_t hold_percent)
 {
     ESP_RETURN_ON_FALSE(handle != NULL, ESP_ERR_INVALID_ARG, TAG, "handle null");
@@ -468,10 +523,26 @@ esp_err_t tmc5160_set_rms_current_ma(tmc5160_handle_t handle, uint16_t irms_ma, 
     ESP_RETURN_ON_FALSE(hold_percent <= 100, ESP_ERR_INVALID_ARG, TAG, "hold percent invalid");
 
     struct tmc5160_dev_t *dev = handle;
-    float rsense          = (float)dev->cfg.rsense_milliohm / 1000.0f;
-    float fullscale_irms  = tmc_fullscale_irms_amps(rsense);
+    float fullscale_irms  = tmc_fullscale_irms_amps(dev->cfg.rsense_milliohm);
     float target_scale    = ((float)irms_ma / 1000.0f) / fullscale_irms;
-    if (target_scale > 1.0f) target_scale = 1.0f;
+    if (target_scale > 1.0f) {
+        ESP_LOGW(TAG, "%u mA ueberschreitet den Vollausschlag von %.0f mA "
+                      "(RSENSE %lu mOhm) — auf Vollausschlag begrenzt",
+                 (unsigned)irms_ma, (double)(fullscale_irms * 1000.0f),
+                 (unsigned long)dev->cfg.rsense_milliohm);
+        target_scale = 1.0f;
+    }
+
+    // Kleinste darstellbare Stufe ist (32/256)*(1/32) = 1/256 des
+    // Vollausschlags. Darunter kann die Suche nur noch nach OBEN abweichen —
+    // das muss gesagt werden, statt es stillschweigend zu tun.
+    float min_ma = fullscale_irms * 1000.0f / 256.0f;
+    if ((float)irms_ma < min_ma) {
+        ESP_LOGW(TAG, "%u mA liegt unter der kleinsten einstellbaren Stufe von "
+                      "%.1f mA (RSENSE %lu mOhm) — es werden %.1f mA gestellt",
+                 (unsigned)irms_ma, (double)min_ma,
+                 (unsigned long)dev->cfg.rsense_milliohm, (double)min_ma);
+    }
 
     tmc5160_current_scaling_t scaling = tmc_choose_current_scalers(target_scale);
     uint8_t  ihold       = tmc_hold_current_from_percent(scaling.irun_reg, hold_percent);
@@ -481,7 +552,18 @@ esp_err_t tmc5160_set_rms_current_ma(tmc5160_handle_t handle, uint16_t irms_ma, 
          ((uint32_t)6                            << 16);
 
     ESP_RETURN_ON_ERROR(tmc5160_set_global_scaler(handle, scaling.global_scaler_reg), TAG, "set GLOBALSCALER");
-    return tmc5160_write_register(handle, TMC5160_REG_IHOLD_IRUN, ihold_irun);
+    ESP_RETURN_ON_ERROR(tmc5160_write_register(handle, TMC5160_REG_IHOLD_IRUN, ihold_irun),
+                        TAG, "set IHOLD_IRUN");
+
+    // Tatsaechlich gestellten Wert merken: GLOBALSCALER und IRUN sind grobe
+    // Stufen, der realisierte Strom weicht vom Wunsch ab. Ein UI, das nur den
+    // Wunschwert anzeigt, verschweigt das.
+    uint32_t gs_eff = (scaling.global_scaler_reg == 0)
+                          ? TMC_GLOBAL_SCALER_FULL_SCALE : scaling.global_scaler_reg;
+    dev->realized_rms_ma = fullscale_irms * 1000.0f
+                         * ((float)gs_eff / 256.0f)
+                         * ((float)(scaling.irun_reg + 1U) / 32.0f);
+    return ESP_OK;
 }
 
 // ===========================================================================

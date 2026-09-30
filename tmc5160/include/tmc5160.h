@@ -12,6 +12,15 @@
 //
 // The driver can either own the SPI bus (default) or attach itself to a
 // bus that is already initialized by the application (`share_spi_bus`).
+//
+// Current scaling: the coil current is measured across external sense
+// resistors RSENSE (a board property, see `rsense_milliohm`):
+//
+//     IFS_rms = V_FS / RSENSE / sqrt(2),   V_FS = 0.325 V
+//     I_rms   = IFS_rms * GLOBALSCALER/256 * (IRUN+1)/32
+//
+// GLOBALSCALER 1..31 is "not allowed for operation"; 0 means full scale
+// (= 256).
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -54,7 +63,10 @@ typedef struct {
     gpio_num_t pin_enable;
     bool       enable_active_low;
 
-    // Sense resistor used for current scaling (0 -> default 75 mOhm).
+    // Sense resistor used for current scaling, in milliohms. This is a BOARD
+    // property — read it off the schematic, it cannot be detected. Every
+    // current the driver computes scales with 1/rsense_milliohm.
+    // 0 -> default 75 mOhm.
     uint32_t rsense_milliohm;
 } tmc5160_config_t;
 
@@ -118,8 +130,36 @@ esp_err_t tmc5160_apply_defaults(tmc5160_handle_t handle, const tmc5160_defaults
 // ---------------------------------------------------------------------------
 // Current scaling
 // ---------------------------------------------------------------------------
+// Picks the GLOBALSCALER/IRUN pair closest to irms_ma that is at most 2 %
+// above it (on equal error the higher IRUN). Requests above full scale are
+// clamped to it, requests below the smallest step (full scale / 256) are
+// raised to it — both with a warning. See tmc5160_get_realized_rms_ma().
 esp_err_t tmc5160_set_rms_current_ma(tmc5160_handle_t handle, uint16_t irms_ma, uint8_t hold_percent);
+
+// Rejects 1..31 with ESP_ERR_INVALID_ARG — that band is not allowed for
+// operation. 0 = full scale (256).
 esp_err_t tmc5160_set_global_scaler  (tmc5160_handle_t handle, uint8_t scaler);
+
+// Update the board's sense resistor at runtime (0 -> 75 mOhm). Does not
+// touch the chip; affects subsequent current maths.
+esp_err_t tmc5160_set_rsense_milliohm(tmc5160_handle_t handle, uint32_t rsense_milliohm);
+
+// ---------------------------------------------------------------------------
+// Current maths, exposed so a UI can show what is actually achievable.
+// ---------------------------------------------------------------------------
+// Full-scale RMS coil current in mA for a sense resistor (0 -> 75 mOhm).
+// Pure function — no handle, no hardware, usable in host tests and for UI
+// previews.
+float tmc5160_fullscale_rms_ma(uint32_t rsense_milliohm);
+
+// Same for the handle's configured sense resistor.
+float tmc5160_get_fullscale_rms_ma(tmc5160_handle_t handle);
+
+// What the last successful tmc5160_set_rms_current_ma() actually realized,
+// in mA RMS. GLOBALSCALER and IRUN are coarse steps, so the realized value
+// can differ noticeably from the requested one — especially at low currents.
+// Returns 0.0 before the first current has been set.
+float tmc5160_get_realized_rms_ma(tmc5160_handle_t handle);
 
 // ---------------------------------------------------------------------------
 // Motion control
