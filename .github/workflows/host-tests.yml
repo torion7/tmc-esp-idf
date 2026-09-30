@@ -1,7 +1,8 @@
 name: Host-Tests
 
 # Referenzvektor-Tests der IDF-freien tmc_motion-Quellen (Register-
-# Dekodierung + Einheiten-Umrechnung) — nur gcc, kein ESP-IDF noetig.
+# Dekodierung + Einheiten-Umrechnung) und des TMC5160-Registertreibers
+# (gegen IDF-Stubs + SPI-Ersatz) — nur gcc, kein ESP-IDF noetig.
 
 on:
   push:

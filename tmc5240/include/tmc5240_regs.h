@@ -29,7 +29,7 @@ enum {
     TMC5240_REG_AMAX         = 0x26,
     TMC5240_REG_VMAX         = 0x27,
     TMC5240_REG_DMAX         = 0x28,
-    TMC5240_REG_TVMAX        = 0x29,    // (TMC5240-specific name; same address as TMC5160 D1)
+    TMC5240_REG_TVMAX        = 0x29,    // TMC5240 only; unused on the TMC5160 (its D1 is at 0x2A, as here)
     TMC5240_REG_D1           = 0x2A,
     TMC5240_REG_VSTOP        = 0x2B,
     TMC5240_REG_TZEROWAIT    = 0x2C,

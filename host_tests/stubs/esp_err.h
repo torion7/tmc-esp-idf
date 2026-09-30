@@ -1,6 +1,7 @@
 // Host-Test-Stub: minimaler Ersatz fuer den ESP-IDF-Header, damit die
-// IDF-freien Quellen (tmc_motion_decode.c, tmc_motion_units.c) mit dem
-// Host-gcc compilieren. Nur was die eingebundenen Header brauchen.
+// IDF-freien Quellen (tmc_motion_decode.c, tmc_motion_units.c) und — mit den
+// uebrigen Stubs hier — tmc5160.c mit dem Host-gcc compilieren. Nur was die
+// eingebundenen Header brauchen.
 #pragma once
 
 typedef int esp_err_t;

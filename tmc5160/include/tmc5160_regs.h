@@ -28,8 +28,12 @@ enum {
     TMC5160_REG_V1           = 0x25,
     TMC5160_REG_AMAX         = 0x26,
     TMC5160_REG_VMAX         = 0x27,
-    TMC5160_REG_D1           = 0x28,
-    TMC5160_REG_DMAX         = 0x29,
+    // Datasheet (ramp generator registers): DMAX = 0x28, D1 = 0x2A, and 0x29
+    // is unused on the TMC5160 (TVMAX exists only on the TMC5240). These were
+    // once listed as D1 = 0x28 / DMAX = 0x29, which left D1 = 0 in position
+    // mode (not allowed) and sent DMAX to the unused address.
+    TMC5160_REG_DMAX         = 0x28,
+    TMC5160_REG_D1           = 0x2A,
     TMC5160_REG_VSTOP        = 0x2B,
     TMC5160_REG_TZEROWAIT    = 0x2C,
     TMC5160_REG_XTARGET      = 0x2D,
